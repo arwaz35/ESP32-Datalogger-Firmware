@@ -2,7 +2,7 @@
 #include "driver/twai.h"
 #include <VBOXSport.h>
 
-String Version = "2.0";
+String Version = "2.1";
 
 // Configuración CAN (TWAI)
 #define CAN_TX_PIN GPIO_NUM_4
@@ -653,22 +653,39 @@ void PANTALLA() {
   // Aqui el texto TPS
   //  actualizarTexto("ttps", String(TP));
 
-  // Aqui el texto de rpm
-  actualizarTexto("trpm", String(RPM));
+  // Aqui el texto de rpm con filtro de cambio
+  static int rpm_anterior = -1;
+  if (RPM != rpm_anterior) {
+    actualizarTexto("trpm", String(RPM));
+    rpm_anterior = RPM;
+  }
 
   // Aqui la barra de progreso de TPS
   //  pnext.print("jtps.val=");
   //  pnext.print(TP);
   //  pnext.print("\xFF\xFF\xFF");
 
-  // Aqui el texto de velocidad
-  actualizarTexto("tspe", String(vel, 1));
+  // Aqui el texto de velocidad con filtro (cambio mayor a 0.1)
+  static float vel_anterior = -1.0;
+  if (abs(vel - vel_anterior) > 0.1) {
+    actualizarTexto("tspe", String(vel, 1));
+    vel_anterior = vel;
+  }
 
-  // Aqui el texto de distancia
-  actualizarTexto("todo", String(diskm, 2));
+  // Aqui el texto de distancia con filtro (cambio mayor a 0.01 km = 10m)
+  static float todo_anterior = -1.0;
+  if (abs(diskm - todo_anterior) > 0.01) {
+    actualizarTexto("todo", String(diskm, 2));
+    todo_anterior = diskm;
+  }
 
-  // Aqui el texto de distancia parcial
-  actualizarTexto("ttri", String(distanciaParcial, 0));
+  // Aqui el texto de distancia parcial con filtro (cambio mayor a 1.0 m, se
+  // muestra con 0 decimales)
+  static double ttri_anterior = -1.0;
+  if (abs(distanciaParcial - ttri_anterior) > 1.0) {
+    actualizarTexto("ttri", String(distanciaParcial, 0));
+    ttri_anterior = distanciaParcial;
+  }
 
   // Aqui el texto de temperatura
   // actualizarTexto("tetemp", String(VSS));
