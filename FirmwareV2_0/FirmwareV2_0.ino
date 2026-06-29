@@ -2,7 +2,7 @@
 #include "driver/twai.h"
 #include <VBOXSport.h>
 
-String Version = "2.1";
+String Version = "2.2";
 
 // Configuración CAN (TWAI)
 #define CAN_TX_PIN GPIO_NUM_4
@@ -62,6 +62,19 @@ bool flagRead = false;
 int LOAD_PTC = 0, ECT = 0, RPM = 0, VSS = 0, IAT = 0, TP = 0, BARO = 0;
 float LTF_Trim = 0.0, MAP = 0.0, CMV = 0;
 
+// Temporizador principal para 10 Hz (no bloqueante)
+unsigned long ultimoCiclo10Hz = 0;
+const unsigned long INTERVALO_10HZ = 100; // 100 ms = 10 Hz
+
+// Máquina de estados CAN asíncrona
+enum EstadoCAN { CAN_ENVIAR_PETICION, CAN_ESPERAR_RESPUESTA };
+EstadoCAN estadoCAN = CAN_ENVIAR_PETICION;
+int indexPIDActual = 0;
+unsigned long beforeTimeCAN = 0;
+const unsigned long timeoutCAN_Asincrono =
+    15;                 // ms (límite de espera no bloqueante por PID)
+bool ecuOnline = false; // Indicador de comunicación activa con la ECU
+
 // Calibración Física de la Moto (Yamaha FINN 114 cc)
 const float CILINDRADA_L = 0.114;
 const float EFICIENCIA_V = 80.0;
@@ -104,9 +117,8 @@ VBOXSport vbox;
 // Configuración
 // const char* VBOX_NAME = "VBSport 07019094"; // Usado anteriormente
 
-// Variables TIEMPO
-unsigned long tiempoInicio = 0, beforeTime = 0, tiempoFinal = 0,
-              tiempoTotal = 0;
+// Variables de tiempo del bucle eliminadas por optimización no bloqueante (se
+// usan variables locales/específicas)
 
 // unsigned long tiempoantes=0, tiempodespues=0, tiempototal=0;
 
@@ -271,156 +283,127 @@ void CALCULOS() {
 }
 
 void loop() {
-  tiempoInicio = millis();
+  // Medir el tiempo de inicio del bucle en microsegundos
+  unsigned long tiempoInicioLoop = micros();
 
-  // Leer pulsador de forma robusta por software (Polling a 10 Hz)
-  if (digitalRead(D_IN_1) == LOW) {
-    pulsador = 6;
-    pulsadorSD = 100;
-    resetPulsador = 0;
+  // 1. Procesar bus CAN de manera asíncrona no bloqueante
+  READ_CAN_ASINCRONO();
+
+  bool ciclo10HzEjecutado = false;
+
+  // 2. Tareas programadas a 10 Hz (cada 100 ms)
+  if (millis() - ultimoCiclo10Hz >= INTERVALO_10HZ) {
+    ultimoCiclo10Hz = millis();
+    ciclo10HzEjecutado = true;
+
+    // Leer pulsador de forma robusta por software (Polling a 10 Hz)
+    if (digitalRead(D_IN_1) == LOW) {
+      pulsador = 6;
+      pulsadorSD = 100;
+      resetPulsador = 0;
+    }
+
+    vbox.update();
+    GPS();
+    CALCULOS();
+    MICRO_SD();
+    PANTALLA();
+
+    resetPulsador++;
+    if (resetPulsador >= 20) {
+      resetPulsador = 0;
+      pulsador = 5;
+    }
   }
 
-  vbox.update();
+  // Calcular el tiempo total de ejecución de esta iteración del loop
+  unsigned long tiempoFinLoop = micros();
+  unsigned long tiempoTotalLoopMicros = tiempoFinLoop - tiempoInicioLoop;
 
-  // Eliminamos el return para que el ciclo siga corriendo a 10 Hz leyendo CAN y
-  // actualizando pantalla if (!vbox.isConnected()) {
-  //   Serial.println("Desconectado...");
-  //   delay(1000);
-  //   return;
-  // }
-  // tiempoFinal = millis();
-  // tiempoTotal = tiempoFinal - tiempoInicio;
-  // Serial.println("Tiempo Update: " + String(tiempoTotal) + " ms");
-
-  READ_CAN();
-  // tiempoFinal = millis();
-  // tiempoTotal = tiempoFinal - tiempoInicio;
-  // Serial.println("Tiempo Read CAN: " + String(tiempoTotal) + " ms");
-
-  GPS();
-  // tiempoFinal = millis();
-  // tiempoTotal = tiempoFinal - tiempoInicio;
-  // Serial.println("Tiempo GPS: " + String(tiempoTotal) + " ms");
-
-  CALCULOS();
-  // tiempoFinal = millis();
-  // tiempoTotal = tiempoFinal - tiempoInicio;
-  // Serial.println("Tiempo Calculos: " + String(tiempoTotal) + " ms");
-
-  MICRO_SD();
-  // tiempoFinal = millis();
-  // tiempoTotal = tiempoFinal - tiempoInicio;
-  // Serial.println("Tiempo Micro SD: " + String(tiempoTotal) + " ms");
-
-  PANTALLA();
-  // tiempoFinal = millis();
-  // tiempoTotal = tiempoFinal - tiempoInicio;
-  // Serial.println("Tiempo Pantalla: " + String(tiempoTotal) + " ms");
-
-  resetPulsador++;
-
-  while (millis() - tiempoInicio < INTERVALO_MS) {
-    // Esperar sin hacer nada (compatible con interrupciones)
+  // Si fue una iteración activa (10 Hz), mostrar el tiempo total consumido por
+  // el ciclo
+  if (ciclo10HzEjecutado) {
+    float tiempoTotalMs = tiempoTotalLoopMicros / 1000.0;
+    Serial.print("Tiempo ejecucion ciclo activo (10Hz): ");
+    Serial.print(tiempoTotalMs, 3);
+    Serial.println(" ms");
   }
-
-  if (resetPulsador >= 20) {
-    resetPulsador = 0;
-    pulsador = 5;
-  }
-
-  tiempoFinal = millis();
-  tiempoTotal = tiempoFinal - tiempoInicio;
-  // Serial.println("Tiempo total: " + String(tiempoTotal) + " ms");
-  // Serial.println(" ");
-
-  // Serial.println("Consumo: " + String(consumoLh, 2) + " L/h | " +
-  //                "Consumo Acumulado: " + String(litrosConsumidos, 2) + " L |
-  //                " + "Km/L Instantáneo: " + String(kmLInstantaneo, 2) + "
-  //                km/L | " + "Km/L Promedio: " + String(kmLPromedio, 2) + "
-  //                km/L");
-
-  // // Verificar si el ciclo tardó más de lo esperado
-  // unsigned long tiempoTotal = millis() - tiempoInicio;
-  // if (tiempoTotal > INTERVALO_MS) {
-  //   Serial.println("ADVERTENCIA: El ciclo tardó " + String(tiempoTotal) +
-  //   ms (>100 ms)");
-  // }
 }
 
-void READ_CAN() {
-  twai_message_t message_req;
-  message_req.identifier = OBD_REQUEST_ID;
-  message_req.extd = 0;
-  message_req.rtr = 0;
-  message_req.data_length_code = 8;
-  // Rellenar ceros fijos
-  for (int k = 3; k < 8; k++)
-    message_req.data[k] = 0x00;
+void READ_CAN_ASINCRONO() {
+  twai_message_t message_resp;
 
-  for (int i = 0; i < dim_PID; i++) {
-    // Configurar trama de petición
-    message_req.data[0] = 0x02;    // bytes adicionales
-    message_req.data[1] = 0x01;    // Servicio
-    message_req.data[2] = PIDs[i]; // PID actual
+  if (estadoCAN == CAN_ENVIAR_PETICION) {
+    twai_message_t message_req;
+    message_req.identifier = OBD_REQUEST_ID;
+    message_req.extd = 0;
+    message_req.rtr = 0;
+    message_req.data_length_code = 8;
+    for (int k = 3; k < 8; k++)
+      message_req.data[k] = 0x00;
 
-    // Enviar petición
-    if (twai_transmit(&message_req, pdMS_TO_TICKS(5)) != ESP_OK) {
-      // Si falla envio, saltamos al siguiente
-      continue;
+    message_req.data[0] = 0x02;                 // bytes adicionales
+    message_req.data[1] = 0x01;                 // Servicio
+    message_req.data[2] = PIDs[indexPIDActual]; // PID actual
+
+    // Intentar transmitir con un timeout mínimo (2ms) para no retrasar el loop
+    if (twai_transmit(&message_req, pdMS_TO_TICKS(2)) == ESP_OK) {
+      beforeTimeCAN = millis();
+      estadoCAN = CAN_ESPERAR_RESPUESTA;
+    } else {
+      // Si falla la transmisión, pasamos al siguiente PID en la próxima
+      // iteración
+      indexPIDActual = (indexPIDActual + 1) % dim_PID;
     }
+  }
 
-    beforeTime = millis();
-    flagRead = false;
-
-    // Esperar respuesta
-    twai_message_t message_resp;
-    while (millis() - beforeTime < timeoutCAN) {
-      if (twai_receive(&message_resp, pdMS_TO_TICKS(2)) == ESP_OK) {
-        // Verificar si es respuesta OBD (0x7E8) y Servicio correcto (0x41)
-        if (message_resp.identifier == OBD_REPLY_ID &&
-            message_resp.data[1] == 0x41) {
-          // Verificar que el PID coincida con el solicitado (o parsear lo que
-          // llegue)
-          if (message_resp.data[2] == PIDs[i]) {
-            switch (message_resp.data[2]) {
-            case 0x04: // Calculated Load
-              LOAD_PTC = message_resp.data[3] * 100 / 255;
-              flagRead = true;
-              break;
-            case 0x0B: // MAP (Manifold Absolute Pressure)
-              MAP = message_resp.data[3];
-              flagRead = true;
-              break;
-            case 0x0C: // RPM
-              RPM = ((256 * message_resp.data[3]) + message_resp.data[4]) / 4;
-              flagRead = true;
-              break;
-            case 0x0D: // VSS
-              VSS = message_resp.data[3];
-              flagRead = true;
-              break;
-            case 0x0F: // IAT (Intake Air Temperature)
-              IAT = message_resp.data[3] - 40;
-              flagRead = true;
-              break;
-            case 0x11: // TP
-              TP = message_resp.data[3] * 100 / 255;
-              flagRead = true;
-              break;
-            }
+  else if (estadoCAN == CAN_ESPERAR_RESPUESTA) {
+    // Comprobación no bloqueante de recepción (0 ticks de espera)
+    if (twai_receive(&message_resp, 0) == ESP_OK) {
+      if (message_resp.identifier == OBD_REPLY_ID &&
+          message_resp.data[1] == 0x41) {
+        if (message_resp.data[2] == PIDs[indexPIDActual]) {
+          // Procesar el PID correspondiente
+          switch (message_resp.data[2]) {
+          case 0x04:
+            LOAD_PTC = message_resp.data[3] * 100 / 255;
+            break;
+          case 0x0B:
+            MAP = message_resp.data[3];
+            break;
+          case 0x0C:
+            RPM = ((256 * message_resp.data[3]) + message_resp.data[4]) / 4;
+            break;
+          case 0x0D:
+            VSS = message_resp.data[3];
+            break;
+          case 0x0F:
+            IAT = message_resp.data[3] - 40;
+            break;
+          case 0x11:
+            TP = message_resp.data[3] * 100 / 255;
+            break;
           }
+          ultimoMensajeECU = millis();
+
+          // Avanzar al siguiente PID y volver al estado de transmisión
+          indexPIDActual = (indexPIDActual + 1) % dim_PID;
+          estadoCAN = CAN_ENVIAR_PETICION;
         }
       }
-      if (flagRead) {
-        ultimoMensajeECU = millis();
-        break; // Salir del while si ya leímos
+    } else {
+      // Si no hay respuesta aún, verificar si excedimos el tiempo límite
+      // (timeout)
+      if (millis() - beforeTimeCAN >= timeoutCAN_Asincrono) {
+        indexPIDActual = (indexPIDActual + 1) % dim_PID;
+        estadoCAN = CAN_ENVIAR_PETICION;
       }
     }
   }
 
-  // Verificar timeout de comunicación con la ECU (moto apagada / switch
-  // cerrado)
+  // Verificar timeout global de comunicación (2 segundos)
   if (millis() - ultimoMensajeECU > 2000) {
+    ecuOnline = false;
     RPM = 0;
     VSS = 0;
     LOAD_PTC = 0;
@@ -429,6 +412,8 @@ void READ_CAN() {
     IAT = 0;
     consumoLh = 0.0;
     kmLInstantaneo = 0.0;
+  } else {
+    ecuOnline = true;
   }
 }
 
