@@ -579,10 +579,10 @@ void PANTALLA() {
           //                ", Event Type: " + String(eventType));
 
           // Si es el componente ID 15 (0x0F hex) y es un Press (0x01)
-          // Si es el componente ID 18 (0x12 hex) y es un Press (0x01)
-          if (componentId == 0x12 && eventType == 0x01) {
+          // Si es el componente ID 17 (0x11 hex) y es un Press (0x01)
+          if (componentId == 0x11 && eventType == 0x01) {
             Serial.println(
-                "¡Botón de Nuevo Archivo presionado en la pantalla (ID 18)!");
+                "¡Botón de Nuevo Archivo presionado en la pantalla (ID 17)!");
             NUEVO_ARCHIVO_SD();
           }
         } else {
