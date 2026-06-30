@@ -2,7 +2,7 @@
 #include "driver/twai.h"
 #include <VBOXSport.h>
 
-String Version = "2.2";
+String Version = "2.3";
 
 // Configuración CAN (TWAI)
 #define CAN_TX_PIN GPIO_NUM_4
@@ -75,9 +75,12 @@ const unsigned long timeoutCAN_Asincrono =
     15;                 // ms (límite de espera no bloqueante por PID)
 bool ecuOnline = false; // Indicador de comunicación activa con la ECU
 
-// Calibración Física de la Moto (Yamaha FINN 114 cc)
-const float CILINDRADA_L = 0.114;
-const float EFICIENCIA_V = 80.0;
+// Calibración Física de la Moto
+// Yamaha FINN = 0.114 (VVA = false)
+// Yamaha NMAX = 0.155 (VVA = true)
+const float CILINDRADA_L = 0.155;
+const float EFICIENCIA_V = 80.0; // Eficiencia estándar si VVA = false
+const bool VVA = true; // Habilitar eficiencia variable (VVA) para NMAX
 
 // Variables globales para almacenamiento de consumo
 float consumoLh = 0.0;
@@ -120,7 +123,8 @@ VBOXSport vbox;
 // Variables de tiempo del bucle eliminadas por optimización no bloqueante (se
 // usan variables locales/específicas)
 
-// unsigned long tiempoantes=0, tiempodespues=0, tiempototal=0;
+// unsigned long tiempoAntes = 0, tiempoDespues = 0, tiempoTotal = 0;
+// bool xxx = true;
 
 void actualizarTexto(String objeto, String valor, String unidad = "") {
   pnext.print(objeto + ".txt=\"" + valor + unidad + "\"\xFF\xFF\xFF");
@@ -258,8 +262,8 @@ void CALCULOS() {
   // --- CÁLCULO DE CONSUMO DE COMBUSTIBLE (Speed-Density) ---
   if (RPM > 0 && MAP > 0) {
     float tempKelvin = IAT + 273.15;
-    consumoLh =
-        (RPM * MAP * CILINDRADA_L * EFICIENCIA_V) / (10400.0 * tempKelvin);
+    float veActual = VVA ? ((RPM >= 6000) ? 85.0 : 78.0) : EFICIENCIA_V;
+    consumoLh = (RPM * MAP * CILINDRADA_L * veActual) / (10400.0 * tempKelvin);
 
     // Integración en ciclo de 100ms (0.1 segundos): L/h / 36000
     litrosConsumidos += (consumoLh / 36000.0);
@@ -322,12 +326,12 @@ void loop() {
 
   // Si fue una iteración activa (10 Hz), mostrar el tiempo total consumido por
   // el ciclo
-  if (ciclo10HzEjecutado) {
-    float tiempoTotalMs = tiempoTotalLoopMicros / 1000.0;
-    Serial.print("Tiempo ejecucion ciclo activo (10Hz): ");
-    Serial.print(tiempoTotalMs, 3);
-    Serial.println(" ms");
-  }
+  // if (ciclo10HzEjecutado) {
+  //   float tiempoTotalMs = tiempoTotalLoopMicros / 1000.0;
+  //   Serial.print("Tiempo ejecucion ciclo activo (10Hz): ");
+  //   Serial.print(tiempoTotalMs, 3);
+  //   Serial.println(" ms");
+  // }
 }
 
 void READ_CAN_ASINCRONO() {
