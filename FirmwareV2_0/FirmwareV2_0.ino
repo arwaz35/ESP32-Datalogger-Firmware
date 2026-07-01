@@ -2,7 +2,7 @@
 #include "driver/twai.h"
 #include <VBOXSport.h>
 
-String Version = "2.3";
+String Version = "2.4";
 
 // Configuración CAN (TWAI)
 #define CAN_TX_PIN GPIO_NUM_4
@@ -207,7 +207,8 @@ void setup() {
 
   // Tomar nombre del archivo y pantalla
   archivo = sd.getFileName();
-  pnext.print("tfil.txt=\"" + archivo + "\"\xFF\xFF\xFF");
+  //pnext.print("tfil.txt=\"" + archivo + "\"\xFF\xFF\xFF");
+  pnext.print("tfil.txt=\"" + archivo.substring(1, 4) + "\"\xFF\xFF\xFF");
 
   // Escribir encabezados usando el array
   sd.startLine();
@@ -260,7 +261,10 @@ void CALCULOS() {
   }
 
   // --- CÁLCULO DE CONSUMO DE COMBUSTIBLE (Speed-Density) ---
-  if (RPM > 0 && MAP > 0) {
+  // Condición de Cut-off de inyección: acelerador cerrado (TP <= 18) en retención (RPM > 1800 y velocidad > 2.0 km/h)
+  bool cutOffInyeccion = (TP <= 18) && (RPM > 1800) && (vel > 2.0);
+
+  if (RPM > 0 && MAP > 0 && !cutOffInyeccion) {
     float tempKelvin = IAT + 273.15;
     float veActual = VVA ? ((RPM >= 6000) ? 85.0 : 78.0) : EFICIENCIA_V;
     consumoLh = (RPM * MAP * CILINDRADA_L * veActual) / (10400.0 * tempKelvin);
@@ -275,7 +279,12 @@ void CALCULOS() {
   if (consumoLh > 0.01) {
     kmLInstantaneo = vel / consumoLh;
   } else {
-    kmLInstantaneo = 0.0;
+    // Si no hay consumo pero nos movemos (cut-off), la eficiencia tiende a infinito. Mostramos un valor máximo.
+    if (vel > 2.0) {
+      kmLInstantaneo = 99.9;
+    } else {
+      kmLInstantaneo = 0.0;
+    }
   }
 
   // Consumo promedio del trayecto en km/L
@@ -539,7 +548,8 @@ void NUEVO_ARCHIVO_SD() {
 
   // 3. Tomar el nombre del nuevo archivo y actualizar en la pantalla
   archivo = sd.getFileName();
-  pnext.print("tfil.txt=\"" + archivo + "\"\xFF\xFF\xFF");
+  //pnext.print("tfil.txt=\"" + archivo + "\"\xFF\xFF\xFF");
+  pnext.print("tfil.txt=\"" + archivo.substring(1, 4) + "\"\xFF\xFF\xFF");
 
   // 4. Escribir los encabezados en el nuevo archivo
   sd.startLine();
@@ -683,11 +693,25 @@ void PANTALLA() {
   // actualizarTexto("tload", String(LOAD_PTC));
 
   // --- ACTUALIZACIÓN DE PANTALLA NEXTION CON DATOS DE CONSUMO ---
-  // 1. Consumo Instantáneo en L/h (objeto: tcon)
-  static float consumoLh_anterior = -1.0;
-  if (abs(consumoLh - consumoLh_anterior) > 0.05) {
-    actualizarTexto("tcon", String(consumoLh, 2), " L/h");
-    consumoLh_anterior = consumoLh;
+  // 1. Consumo Instantáneo dinámico (objeto: tcon) - L/h (vel < 2) o km/L (vel >= 2)
+  static float valor_anterior = -1.0;
+  static bool modoKmL_anterior = false; // false = L/h, true = km/L
+  bool modoKmL_actual = (vel >= 2.0);
+  float valor_actual = modoKmL_actual ? kmLInstantaneo : consumoLh;
+  float umbralCambio = modoKmL_actual ? 0.1 : 0.05;
+
+  if (modoKmL_actual != modoKmL_anterior || abs(valor_actual - valor_anterior) > umbralCambio) {
+    if (modoKmL_actual) {
+      if (valor_actual >= 99.9) {
+        actualizarTexto("tcon", "99.9", " km/L");
+      } else {
+        actualizarTexto("tcon", String(valor_actual, 1), " km/L");
+      }
+    } else {
+      actualizarTexto("tcon", String(valor_actual, 2), " L/h");
+    }
+    valor_anterior = valor_actual;
+    modoKmL_anterior = modoKmL_actual;
   }
 
   // 2. Consumo Acumulado en Litros (objeto: tlit)
