@@ -2,7 +2,7 @@
 #include "driver/twai.h"
 #include <VBOXSport.h>
 
-String Version = "2.4";
+String Version = "2.5";
 
 // Configuración CAN (TWAI)
 #define CAN_TX_PIN GPIO_NUM_4
@@ -15,17 +15,28 @@ String Version = "2.4";
 
 // Configuracion SD
 #define CS_PIN 15
-#define NUM_VARIABLES 24
+#define NUM_VARIABLES 25
 SDLogger sd;
 
-// Pulsador
+// Inyector
 const int D_IN_1 = 14;
+volatile unsigned long inyectorTiempoInicio = 0;
+volatile unsigned long inyectorAnchoPulsoUs = 0;
+volatile unsigned long inyectorTiempoTotalUs =
+    0; // Tiempo total acumulado de inyección en microsegundos
+unsigned long localAnchoPulsoUs = 0;
+unsigned long localTiempoTotalUs = 0;
+
+// Pulsador
+const int D_IN_2 = 27;
 // volatile int estadoVariable = 0;
 // volatile unsigned long tiempoActivacion = 0;
 volatile int pulsador = 5;
 volatile int pulsadorSD = 0;
 volatile int resetPulsador = 0;
 bool flagPulsador6 = false; // Flag para detectar cambio a pulsador = 6
+int estadoPulsadorActivo =
+    LOW; // Nivel de activación calibrado automáticamente (LOW o HIGH)
 
 // Definir encabezados como constantes (ahorra RAM)
 const char *ENCABEZADOS[NUM_VARIABLES] = {
@@ -52,7 +63,8 @@ const char *ENCABEZADOS[NUM_VARIABLES] = {
     "Consumo_L_H",          // 21
     "Consumo_Acumulado_L",  // 22
     "KmL_Instantaneo",      // 23
-    "KmL_Promedio"          // 24
+    "KmL_Promedio",         // 24
+    "Pulso_Iny_Acumulado"   // 25
 };
 
 // Variables CAN_OBD--------------------
@@ -135,15 +147,59 @@ void actualizarTexto(String objeto, String valor, String unidad = "") {
   // actualizarTexto("t3", String(sat));  Sin unidad
 }
 
+void IRAM_ATTR isrInyector() {
+  unsigned long tiempoActual = micros();
+  int estadoPin = digitalRead(D_IN_1);
+
+  if (estadoPin == LOW) {
+    // El inyector se activa (flanco de bajada / paso a LOW)
+    inyectorTiempoInicio = tiempoActual;
+  } else {
+    // El inyector se desactiva (flanco de subida / paso a HIGH)
+    if (inyectorTiempoInicio > 0) {
+      unsigned long duracion = tiempoActual - inyectorTiempoInicio;
+      // Filtro de ruido básico: ignorar transitorios < 100us o > 100ms
+      if (duracion >= 100 && duracion <= 100000) {
+        inyectorAnchoPulsoUs = duracion;
+        inyectorTiempoTotalUs += duracion;
+      }
+    }
+  }
+}
+
+void CALIBRACION() {
+  Serial.println("Iniciando calibración automática del pulsador D_IN_2...");
+  unsigned long tiempoInicioCalibracion = millis();
+  long sumaLecturas = 0;
+  int conteoMuestras = 0;
+  while (millis() - tiempoInicioCalibracion < 3000) {
+    sumaLecturas += digitalRead(D_IN_2);
+    conteoMuestras++;
+    delay(100);
+  }
+
+  if (sumaLecturas > (conteoMuestras / 2)) {
+    estadoPulsadorActivo = LOW;
+    Serial.println(
+        "Pulsador calibrado: Reposo HIGH -> Activo en LOW (12V en reposo)");
+  } else {
+    estadoPulsadorActivo = HIGH;
+    Serial.println(
+        "Pulsador calibrado: Reposo LOW -> Activo en HIGH (0V en reposo)");
+  }
+}
+
 void setup() {
   // Iniciar Puerto Serial
+  delay(1000);
   Serial.begin(115200);
   delay(1000);
   Serial.println("Serial iniciado");
-  delay(1000);
 
-  // Configurar el pin 34 como entrada
+  // Configurar el pin 14 y 27 como entrada
   pinMode(D_IN_1, INPUT);
+  pinMode(D_IN_2, INPUT);
+  attachInterrupt(digitalPinToInterrupt(D_IN_1), isrInyector, CHANGE);
 
   // Configuracion CAN--------------------
   // Configuracion CAN (TWAI)--------------------
@@ -177,8 +233,8 @@ void setup() {
   pnext.print("\xFF\xFF\xFF");
   Serial.println("Pantalla iniciada");
   actualizarTexto("tver", Version);
-  delay(3000);
-  pnext.print("page 1");
+  CALIBRACION();
+  pnext.print("page 2");
   pnext.print("\xFF\xFF\xFF");
 
   // Iniciar Bluetooth y conexion a VBOX
@@ -187,10 +243,10 @@ void setup() {
   if (vbox.begin(macVBOX)) {
     Serial.println("¡Conectado exitosamente!");
     // Configurar filtro de velocidad mínima para cálculo de distancia
-    vbox.setMinSpeedKmh(0.5); // Solo contará distancia si velocidad >= 0.5 km/h
+    vbox.setMinSpeedKmh(0.8); // Solo contará distancia si velocidad >= 0.8 km/h
     vbox.setSpeedClamp(
-        0.5); // Reportará 0 km/h si la velocidad detectada es < 0.5 km/h
-    // Serial.println("Filtro de velocidad configurado: 0.5 km/h");
+        0.8); // Reportará 0 km/h si la velocidad detectada es < 0.8 km/h
+
   } else {
     Serial.println("Error de conexión");
   }
@@ -207,7 +263,7 @@ void setup() {
 
   // Tomar nombre del archivo y pantalla
   archivo = sd.getFileName();
-  //pnext.print("tfil.txt=\"" + archivo + "\"\xFF\xFF\xFF");
+  // pnext.print("tfil.txt=\"" + archivo + "\"\xFF\xFF\xFF");
   pnext.print("tfil.txt=\"" + archivo.substring(1, 4) + "\"\xFF\xFF\xFF");
 
   // Escribir encabezados usando el array
@@ -261,8 +317,9 @@ void CALCULOS() {
   }
 
   // --- CÁLCULO DE CONSUMO DE COMBUSTIBLE (Speed-Density) ---
-  // Condición de Cut-off de inyección: acelerador cerrado (TP <= 18) en retención (RPM > 1800 y velocidad > 2.0 km/h)
-  bool cutOffInyeccion = (TP <= 18) && (RPM > 1800) && (vel > 2.0);
+  // Condición de Cut-off de inyección: acelerador cerrado (TP <= 18) en
+  // retención (RPM > 1800 y velocidad > 2.0 km/h)
+  bool cutOffInyeccion = (TP <= 15) && (RPM > 1800) && (vel > 2.0);
 
   if (RPM > 0 && MAP > 0 && !cutOffInyeccion) {
     float tempKelvin = IAT + 273.15;
@@ -279,7 +336,8 @@ void CALCULOS() {
   if (consumoLh > 0.01) {
     kmLInstantaneo = vel / consumoLh;
   } else {
-    // Si no hay consumo pero nos movemos (cut-off), la eficiencia tiende a infinito. Mostramos un valor máximo.
+    // Si no hay consumo pero nos movemos (cut-off), la eficiencia tiende a
+    // infinito. Mostramos un valor máximo.
     if (vel > 2.0) {
       kmLInstantaneo = 99.9;
     } else {
@@ -309,8 +367,14 @@ void loop() {
     ultimoCiclo10Hz = millis();
     ciclo10HzEjecutado = true;
 
+    // Copia segura de variables del inyector
+    noInterrupts();
+    localAnchoPulsoUs = inyectorAnchoPulsoUs;
+    localTiempoTotalUs = inyectorTiempoTotalUs;
+    interrupts();
+
     // Leer pulsador de forma robusta por software (Polling a 10 Hz)
-    if (digitalRead(D_IN_1) == LOW) {
+    if (digitalRead(D_IN_2) == estadoPulsadorActivo) {
       pulsador = 6;
       pulsadorSD = 100;
       resetPulsador = 0;
@@ -335,12 +399,12 @@ void loop() {
 
   // Si fue una iteración activa (10 Hz), mostrar el tiempo total consumido por
   // el ciclo
-  // if (ciclo10HzEjecutado) {
-  //   float tiempoTotalMs = tiempoTotalLoopMicros / 1000.0;
-  //   Serial.print("Tiempo ejecucion ciclo activo (10Hz): ");
-  //   Serial.print(tiempoTotalMs, 3);
-  //   Serial.println(" ms");
-  // }
+  if (ciclo10HzEjecutado) {
+    float tiempoTotalMs = tiempoTotalLoopMicros / 1000.0;
+    Serial.print("Tiempo ejecucion ciclo activo (10Hz): ");
+    Serial.print(tiempoTotalMs, 3);
+    Serial.println(" ms");
+  }
 }
 
 void READ_CAN_ASINCRONO() {
@@ -395,6 +459,8 @@ void READ_CAN_ASINCRONO() {
             break;
           case 0x11:
             TP = message_resp.data[3] * 100 / 255;
+            // Serial.print("TP: ");
+            // Serial.println(TP);
             break;
           }
           ultimoMensajeECU = millis();
@@ -522,6 +588,7 @@ void MICRO_SD() {
   sd.addValue(litrosConsumidos, 4);    // 22  Consumo Acumulado L
   sd.addValue(kmLInstantaneo, 2);      // 23  Km/L Instantáneo
   sd.addValue(kmLPromedio, 2);         // 24  Km/L Promedio
+  sd.addValue(localTiempoTotalUs, 0);  // 25  Pulso_Iny_Acumulado
   sd.endLine();
 
   static int count = 0;
@@ -548,7 +615,7 @@ void NUEVO_ARCHIVO_SD() {
 
   // 3. Tomar el nombre del nuevo archivo y actualizar en la pantalla
   archivo = sd.getFileName();
-  //pnext.print("tfil.txt=\"" + archivo + "\"\xFF\xFF\xFF");
+  // pnext.print("tfil.txt=\"" + archivo + "\"\xFF\xFF\xFF");
   pnext.print("tfil.txt=\"" + archivo.substring(1, 4) + "\"\xFF\xFF\xFF");
 
   // 4. Escribir los encabezados en el nuevo archivo
@@ -593,10 +660,10 @@ void PANTALLA() {
           //                ", Event Type: " + String(eventType));
 
           // Si es el componente ID 15 (0x0F hex) y es un Press (0x01)
-          // Si es el componente ID 17 (0x11 hex) y es un Press (0x01)
-          if (componentId == 0x11 && eventType == 0x01) {
+          // Si es el componente ID 20 (0x14 hex) y es un Press (0x01)
+          if (componentId == 0x14 && eventType == 0x01) {
             Serial.println(
-                "¡Botón de Nuevo Archivo presionado en la pantalla (ID 17)!");
+                "¡Botón de Nuevo Archivo presionado en la pantalla (ID 20)!");
             NUEVO_ARCHIVO_SD();
           }
         } else {
@@ -693,14 +760,16 @@ void PANTALLA() {
   // actualizarTexto("tload", String(LOAD_PTC));
 
   // --- ACTUALIZACIÓN DE PANTALLA NEXTION CON DATOS DE CONSUMO ---
-  // 1. Consumo Instantáneo dinámico (objeto: tcon) - L/h (vel < 2) o km/L (vel >= 2)
+  // 1. Consumo Instantáneo dinámico (objeto: tcon) - L/h (vel < 2) o km/L (vel
+  // >= 2)
   static float valor_anterior = -1.0;
   static bool modoKmL_anterior = false; // false = L/h, true = km/L
   bool modoKmL_actual = (vel >= 2.0);
   float valor_actual = modoKmL_actual ? kmLInstantaneo : consumoLh;
   float umbralCambio = modoKmL_actual ? 0.1 : 0.05;
 
-  if (modoKmL_actual != modoKmL_anterior || abs(valor_actual - valor_anterior) > umbralCambio) {
+  if (modoKmL_actual != modoKmL_anterior ||
+      abs(valor_actual - valor_anterior) > umbralCambio) {
     if (modoKmL_actual) {
       if (valor_actual >= 99.9) {
         actualizarTexto("tcon", "99.9", " km/L");
@@ -726,5 +795,21 @@ void PANTALLA() {
   if (abs(kmLPromedio - kmLPromedio_anterior) > 0.1) {
     actualizarTexto("tkml", String(kmLPromedio, 1), " km/L");
     kmLPromedio_anterior = kmLPromedio;
+  }
+
+  // 4. Ancho de pulso instantáneo del inyector (objeto: tpin) en ms
+  static float instantaneoMsAnterior = -1.0;
+  float instantaneoMs = localAnchoPulsoUs / 1000.0;
+  if (abs(instantaneoMs - instantaneoMsAnterior) > 0.01) {
+    actualizarTexto("tpin", String(instantaneoMs, 2), "ms");
+    instantaneoMsAnterior = instantaneoMs;
+  }
+
+  // 5. Tiempo acumulado total del inyector (objeto: tpto) en segundos
+  static float acumuladoSegAnterior = -1.0;
+  float acumuladoSeg = localTiempoTotalUs / 1000000.0;
+  if (abs(acumuladoSeg - acumuladoSegAnterior) > 0.001) {
+    actualizarTexto("tpto", String(acumuladoSeg, 3), "s");
+    acumuladoSegAnterior = acumuladoSeg;
   }
 }
