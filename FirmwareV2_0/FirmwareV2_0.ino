@@ -2,7 +2,7 @@
 #include "driver/twai.h"
 #include <VBOXSport.h>
 
-String Version = "2.5";
+String Version = "2.6";
 
 // Configuración CAN (TWAI)
 #define CAN_TX_PIN GPIO_NUM_4
@@ -15,7 +15,7 @@ String Version = "2.5";
 
 // Configuracion SD
 #define CS_PIN 15
-#define NUM_VARIABLES 25
+#define NUM_VARIABLES 27
 SDLogger sd;
 
 // Inyector
@@ -64,7 +64,9 @@ const char *ENCABEZADOS[NUM_VARIABLES] = {
     "Consumo_Acumulado_L",  // 22
     "KmL_Instantaneo",      // 23
     "KmL_Promedio",         // 24
-    "Pulso_Iny_Acumulado"   // 25
+    "Pulso_Iny_Acumulado",  // 25
+    "STFT",                 // 26
+    "LTFT"                  // 27
 };
 
 // Variables CAN_OBD--------------------
@@ -72,7 +74,7 @@ int dim_PID;
 int timeoutCAN = 20; // ms
 bool flagRead = false;
 int LOAD_PTC = 0, ECT = 0, RPM = 0, VSS = 0, IAT = 0, TP = 0, BARO = 0;
-float LTF_Trim = 0.0, MAP = 0.0, CMV = 0;
+float STF_Trim = 0.0, LTF_Trim = 0.0, MAP = 0.0, CMV = 0;
 
 // Temporizador principal para 10 Hz (no bloqueante)
 unsigned long ultimoCiclo10Hz = 0;
@@ -101,8 +103,9 @@ float kmLInstantaneo = 0.0;
 float kmLPromedio = 0.0;
 unsigned long ultimoMensajeECU = 0;
 
-// PIDs activos a consultar (incluyendo MAP 0x0B y IAT 0x0F)
-int PIDs[] = {0x04, 0x0B, 0x0C, 0x0D, 0x0F, 0x11};
+// PIDs activos a consultar (incluyendo STFT 0x06, LTFT 0x07, MAP 0x0B y IAT
+// 0x0F)
+int PIDs[] = {0x04, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0F, 0x11};
 
 // Variables
 // GPS
@@ -324,7 +327,18 @@ void CALCULOS() {
   if (RPM > 0 && MAP > 0 && !cutOffInyeccion) {
     float tempKelvin = IAT + 273.15;
     float veActual = VVA ? ((RPM >= 6000) ? 85.0 : 78.0) : EFICIENCIA_V;
-    consumoLh = (RPM * MAP * CILINDRADA_L * veActual) / (10400.0 * tempKelvin);
+
+    // Calcular factor de corrección por trims y limitar entre 0.70 y 1.30
+    // (+-30%)
+    float trimFactor = 1.0 + ((STF_Trim + LTF_Trim) / 100.0);
+    if (trimFactor < 0.70)
+      trimFactor = 0.70;
+    if (trimFactor > 1.30)
+      trimFactor = 1.30;
+
+    consumoLh =
+        ((RPM * MAP * CILINDRADA_L * veActual) / (10400.0 * tempKelvin)) *
+        trimFactor;
 
     // Integración en ciclo de 100ms (0.1 segundos): L/h / 36000
     litrosConsumidos += (consumoLh / 36000.0);
@@ -445,6 +459,12 @@ void READ_CAN_ASINCRONO() {
           case 0x04:
             LOAD_PTC = message_resp.data[3] * 100 / 255;
             break;
+          case 0x06:
+            STF_Trim = ((float)message_resp.data[3] / 1.28) - 100.0;
+            break;
+          case 0x07:
+            LTF_Trim = ((float)message_resp.data[3] / 1.28) - 100.0;
+            break;
           case 0x0B:
             MAP = message_resp.data[3];
             break;
@@ -489,6 +509,8 @@ void READ_CAN_ASINCRONO() {
     TP = 0;
     MAP = 0.0;
     IAT = 0;
+    STF_Trim = 0.0;
+    LTF_Trim = 0.0;
     consumoLh = 0.0;
     kmLInstantaneo = 0.0;
   } else {
@@ -589,6 +611,8 @@ void MICRO_SD() {
   sd.addValue(kmLInstantaneo, 2);      // 23  Km/L Instantáneo
   sd.addValue(kmLPromedio, 2);         // 24  Km/L Promedio
   sd.addValue(localTiempoTotalUs, 0);  // 25  Pulso_Iny_Acumulado
+  sd.addValue(STF_Trim, 2);            // 26  STFT
+  sd.addValue(LTF_Trim, 2);            // 27  LTFT
   sd.endLine();
 
   static int count = 0;
