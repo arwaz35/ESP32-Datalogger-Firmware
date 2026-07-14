@@ -52,6 +52,18 @@ class SDLogger {
       lineStarted = true;
     }
     
+    // Sobrecargas para evitar el problema de base 0 en tipos enteros
+    void addValue(int value, int decimals = 0) { addIntValue(value); }
+    void addValue(unsigned int value, int decimals = 0) { addIntValue(value); }
+    void addValue(long value, int decimals = 0) { addIntValue(value); }
+    void addValue(unsigned long value, int decimals = 0) { addIntValue(value); }
+    void addValue(long long value, int decimals = 0) { addIntValue(value); }
+    void addValue(unsigned long long value, int decimals = 0) { addIntValue(value); }
+    void addValue(short value, int decimals = 0) { addIntValue(value); }
+    void addValue(unsigned short value, int decimals = 0) { addIntValue(value); }
+    void addValue(signed char value, int decimals = 0) { addIntValue(value); }
+    void addValue(unsigned char value, int decimals = 0) { addIntValue(value); }
+    
     // MÉTODO 3b: Agregar String (para encabezados o texto)
     void addValue(String text);
     void addValue(const char* text);
@@ -64,6 +76,18 @@ class SDLogger {
     String getFileName();
     
   private:
+    template <typename T>
+    void addIntValue(T value) {
+      if (!dataFile) {
+        return;
+      }
+      if (lineStarted) {
+        dataFile.print(";");
+      }
+      dataFile.print(value);
+      lineStarted = true;
+    }
+
     #if SD_FAT_TYPE == 0
       SdFat sd;
       File dataFile;

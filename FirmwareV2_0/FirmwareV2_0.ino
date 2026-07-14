@@ -151,11 +151,11 @@ void IRAM_ATTR isrInyector() {
   unsigned long tiempoActual = micros();
   int estadoPin = digitalRead(D_IN_1);
 
-  if (estadoPin == LOW) {
-    // El inyector se activa (flanco de bajada / paso a LOW)
+  if (estadoPin == HIGH) {
+    // El inyector se activa (la señal sube a HIGH debido al optoacoplador)
     inyectorTiempoInicio = tiempoActual;
   } else {
-    // El inyector se desactiva (flanco de subida / paso a HIGH)
+    // El inyector se desactiva (la señal cae a LOW)
     if (inyectorTiempoInicio > 0) {
       unsigned long duracion = tiempoActual - inyectorTiempoInicio;
       // Filtro de ruido básico: ignorar transitorios < 100us o > 100ms
@@ -805,11 +805,11 @@ void PANTALLA() {
     instantaneoMsAnterior = instantaneoMs;
   }
 
-  // 5. Tiempo acumulado total del inyector (objeto: tpto) en segundos
+  // 5. Tiempo acumulado total del inyector (objeto: tppr) en segundos
   static float acumuladoSegAnterior = -1.0;
   float acumuladoSeg = localTiempoTotalUs / 1000000.0;
   if (abs(acumuladoSeg - acumuladoSegAnterior) > 0.001) {
-    actualizarTexto("tpto", String(acumuladoSeg, 3), "s");
+    actualizarTexto("tppr", String(acumuladoSeg, 3), "s");
     acumuladoSegAnterior = acumuladoSeg;
   }
 }

@@ -17,6 +17,8 @@ struct OBD_PID {
 
 // Lista de PIDs propuestos para el análisis de consumo de combustible
 OBD_PID pids_to_scan[] = {
+  {0x06, "STFT", "Short Term Fuel Trim - Bank 1"},
+  {0x07, "LTFT", "Long Term Fuel Trim - Bank 1"},
   {0x0B, "MAP", "Intake Manifold Absolute Pressure (Presión Colector)"},
   {0x0C, "RPM", "Engine RPM (Revoluciones por Minuto)"},
   {0x0D, "VSS", "Vehicle Speed Sensor (Velocidad Moto)"},
@@ -123,6 +125,12 @@ void loop() {
       
       // Decodificación preliminar de prueba para asegurar que el dato sea coherente
       switch (pids_to_scan[i].code) {
+        case 0x06: // STFT
+          Serial.printf("(STFT: %.2f %%)\n", ((float)valA / 1.28) - 100.0);
+          break;
+        case 0x07: // LTFT
+          Serial.printf("(LTFT: %.2f %%)\n", ((float)valA / 1.28) - 100.0);
+          break;
         case 0x0B: // MAP
           Serial.printf("(Presion: %d kPa)\n", valA);
           break;
